@@ -7,19 +7,32 @@ import type { Reserva } from '@/lib/types';
 interface ReservaRowProps {
   readonly reserva: Reserva;
   readonly onUpdate: (updated: Reserva) => void;
+  readonly showDate?: boolean;
 }
 
-export function ReservaRow({ reserva, onUpdate }: ReservaRowProps) {
+function formatFecha(fechaStr: string): string {
+  const date = new Date(fechaStr + 'T12:00:00');
+  return date.toLocaleDateString('es-ES', {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+  });
+}
+
+export function ReservaRow({ reserva, onUpdate, showDate = false }: ReservaRowProps) {
   const alergenosText =
     reserva.alergenos_grupo.length > 0
-      ? reserva.alergenos_grupo
-          .map((a) => ALERGENOS[a]?.nombre ?? a)
-          .join(', ')
+      ? reserva.alergenos_grupo.map((a) => ALERGENOS[a]?.nombre ?? a).join(', ')
       : '-';
 
   return (
     <TableRow>
-      <TableCell className="font-medium">{reserva.hora}</TableCell>
+      {showDate && (
+        <TableCell className="text-xs font-medium text-carbon/70 capitalize whitespace-nowrap">
+          {formatFecha(reserva.fecha)}
+        </TableCell>
+      )}
+      <TableCell className="font-medium whitespace-nowrap">{reserva.hora}</TableCell>
       <TableCell>{reserva.nombre}</TableCell>
       <TableCell className="text-center">{reserva.comensales}</TableCell>
       <TableCell className="hidden md:table-cell">{reserva.telefono}</TableCell>

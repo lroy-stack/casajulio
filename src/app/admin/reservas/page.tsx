@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { format, addDays, isToday, isTomorrow, isYesterday } from 'date-fns';
 import { es } from 'date-fns/locale';
-import { CalendarIcon, Download, Loader2, ChevronLeft, ChevronRight, Clock } from 'lucide-react';
+import { CalendarIcon, Download, Loader2, ChevronLeft, ChevronRight, Clock, AlertCircle } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { ReservaRow } from '@/components/admin/ReservaRow';
 import { Button } from '@/components/ui/button';
@@ -27,6 +27,8 @@ import {
 import { ALERGENOS } from '@/lib/types';
 import type { Reserva, EstadoReserva } from '@/lib/types';
 
+/* ── Constants ─────────────────────────────────────────────────────────── */
+
 const ESTADO_OPTIONS: { value: 'todas' | EstadoReserva; label: string }[] = [
   { value: 'todas', label: 'Todas' },
   { value: 'pendiente', label: 'Pendiente' },
@@ -35,6 +37,10 @@ const ESTADO_OPTIONS: { value: 'todas' | EstadoReserva; label: string }[] = [
   { value: 'cancelada', label: 'Cancelada' },
   { value: 'no_presentado', label: 'No presentado' },
 ];
+
+type ViewMode = 'dia' | 'pendientes';
+
+/* ── Helpers ────────────────────────────────────────────────────────────── */
 
 function todayDate(): Date {
   const d = new Date();
@@ -49,7 +55,7 @@ function getDayLabel(date: Date): string {
   return format(date, "EEEE d 'de' MMMM", { locale: es });
 }
 
-function exportCsv(reservas: readonly Reserva[], fecha: string) {
+function exportCsv(reservas: readonly Reserva[], label: string) {
   const headers = [
     'N.º reserva', 'Nombre', 'Teléfono', 'Email',
     'Fecha', 'Hora', 'Comensales', 'Estado',
@@ -68,57 +74,99 @@ function exportCsv(reservas: readonly Reserva[], fecha: string) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `reservas-${fecha}.csv`;
+  a.download = `reservas-${label}.csv`;
   a.click();
   URL.revokeObjectURL(url);
 }
 
+/* ══════════════════════════════════════════════════════════════════════════ */
+/* Page                                                                       */
+/* ══════════════════════════════════════════════════════════════════════════ */
+
 export default function AdminReservasPage() {
+  const [viewMode, setViewMode] = useState<ViewMode>('pendientes');
+
+  // Day-view state
   const [selectedDate, setSelectedDate] = useState<Date>(todayDate());
   const [estadoFilter, setEstadoFilter] = useState<'todas' | EstadoReserva>('todas');
-  const [reservas, setReservas] = useState<readonly Reserva[]>([]);
-  const [pendingCount, setPendingCount] = useState(0);
-  const [loading, setLoading] = useState(true);
+  const [dayReservas, setDayReservas] = useState<readonly Reserva[]>([]);
   const [calendarOpen, setCalendarOpen] = useState(false);
 
-  const fetchReservas = useCallback(async (date: Date, estado: 'todas' | EstadoReserva) => {
+  // Pending-view state
+  const [pendingReservas, setPendingReservas] = useState<readonly Reserva[]>([]);
+  const [totalPending, setTotalPending] = useState(0);
+
+  const [loading, setLoading] = useState(true);
+
+  /* ── Fetch day reservations ─────────────────────────────────────────── */
+  const fetchDayReservas = useCallback(async (date: Date, estado: 'todas' | EstadoReserva) => {
     setLoading(true);
     const fechaStr = format(date, 'yyyy-MM-dd');
-
-    // Fetch filtered + total pending for the day
-    const [filteredResult, pendingResult] = await Promise.all([
-      supabase
-        .from('reservas')
-        .select('*')
-        .eq('fecha', fechaStr)
-        .order('hora', { ascending: true })
-        .then((r) => estado !== 'todas'
-          ? supabase.from('reservas').select('*').eq('fecha', fechaStr).eq('estado', estado).order('hora', { ascending: true })
-          : r
-        ),
-      supabase
-        .from('reservas')
-        .select('*', { count: 'exact', head: true })
-        .eq('fecha', fechaStr)
-        .eq('estado', 'pendiente'),
-    ]);
-
-    setReservas(filteredResult.data ?? []);
-    setPendingCount(pendingResult.count ?? 0);
+    let query = supabase
+      .from('reservas')
+      .select('*')
+      .eq('fecha', fechaStr)
+      .order('hora', { ascending: true });
+    if (estado !== 'todas') query = query.eq('estado', estado);
+    const { data } = await query;
+    setDayReservas(data ?? []);
     setLoading(false);
   }, []);
 
-  useEffect(() => {
-    fetchReservas(selectedDate, estadoFilter);
-  }, [selectedDate, estadoFilter, fetchReservas]);
+  /* ── Fetch ALL pending reservations ────────────────────────────────── */
+  const fetchPendingReservas = useCallback(async () => {
+    setLoading(true);
+    const today = format(new Date(), 'yyyy-MM-dd');
+    const { data } = await supabase
+      .from('reservas')
+      .select('*')
+      .eq('estado', 'pendiente')
+      .gte('fecha', today)          // solo desde hoy en adelante
+      .order('fecha', { ascending: true })
+      .order('hora', { ascending: true });
+    const all = data ?? [];
+    setPendingReservas(all);
+    setTotalPending(all.length);
+    setLoading(false);
+  }, []);
 
-  const handleUpdate = useCallback((updated: Reserva) => {
-    setReservas((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
+  /* ── Also load total pending count for the badge ────────────────────── */
+  const refreshPendingCount = useCallback(async () => {
+    const today = format(new Date(), 'yyyy-MM-dd');
+    const { count } = await supabase
+      .from('reservas')
+      .select('*', { count: 'exact', head: true })
+      .eq('estado', 'pendiente')
+      .gte('fecha', today);
+    setTotalPending(count ?? 0);
+  }, []);
+
+  useEffect(() => {
+    if (viewMode === 'dia') {
+      fetchDayReservas(selectedDate, estadoFilter);
+      refreshPendingCount();
+    } else {
+      fetchPendingReservas();
+    }
+  }, [viewMode, selectedDate, estadoFilter, fetchDayReservas, fetchPendingReservas, refreshPendingCount]);
+
+  /* ── Update handlers ───────────────────────────────────────────────── */
+  const handleUpdateDay = useCallback((updated: Reserva) => {
+    setDayReservas((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
+    refreshPendingCount();
+  }, [refreshPendingCount]);
+
+  const handleUpdatePending = useCallback((updated: Reserva) => {
+    // If estado changed from pendiente, remove from pending list
     if (updated.estado !== 'pendiente') {
-      setPendingCount((n) => Math.max(0, n - 1));
+      setPendingReservas((prev) => prev.filter((r) => r.id !== updated.id));
+      setTotalPending((n) => Math.max(0, n - 1));
+    } else {
+      setPendingReservas((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
     }
   }, []);
 
+  /* ── Day nav ───────────────────────────────────────────────────────── */
   function goDay(offset: number) {
     setSelectedDate((prev) => {
       const next = addDays(prev, offset);
@@ -130,6 +178,8 @@ export default function AdminReservasPage() {
   const fechaStr = format(selectedDate, 'yyyy-MM-dd');
   const dayLabel = getDayLabel(selectedDate);
 
+  /* ══════════════════════════════════════════════════════════════════════ */
+
   return (
     <div className="p-4 md:p-6 max-w-7xl mx-auto space-y-5">
       {/* Header */}
@@ -139,170 +189,242 @@ export default function AdminReservasPage() {
           variant="outline"
           size="sm"
           className="gap-2 self-start sm:self-auto"
-          onClick={() => exportCsv(reservas, fechaStr)}
-          disabled={reservas.length === 0}
+          onClick={() => exportCsv(
+            viewMode === 'dia' ? dayReservas : pendingReservas,
+            viewMode === 'dia' ? fechaStr : 'pendientes'
+          )}
+          disabled={(viewMode === 'dia' ? dayReservas : pendingReservas).length === 0}
         >
           <Download className="size-4" />
           Exportar CSV
         </Button>
       </div>
 
-      {/* Date navigation */}
-      <div className="flex items-center gap-2 flex-wrap">
-        {/* Prev / Next */}
-        <Button variant="outline" size="icon-sm" onClick={() => goDay(-1)} title="Día anterior">
-          <ChevronLeft className="size-4" />
-        </Button>
-
-        <Button variant="outline" size="icon-sm" onClick={() => goDay(1)} title="Día siguiente">
-          <ChevronRight className="size-4" />
-        </Button>
-
-        {/* Day label + calendar picker */}
-        <Popover open={calendarOpen} onOpenChange={setCalendarOpen}>
-          <PopoverTrigger
-            render={<button type="button" />}
-            className="flex h-9 items-center gap-2 rounded-lg border border-input bg-transparent px-3 py-1 text-sm font-medium transition-colors hover:bg-muted capitalize"
-          >
-            <CalendarIcon className="size-4 text-carbon/40 shrink-0" />
-            {dayLabel}
-            {!isToday(selectedDate) && (
-              <span className="text-xs text-carbon/40 font-normal">
-                · {format(selectedDate, 'd MMM', { locale: es })}
-              </span>
-            )}
-          </PopoverTrigger>
-          <PopoverContent className="w-auto p-0" align="start">
-            <Calendar
-              mode="single"
-              selected={selectedDate}
-              onSelect={(date) => {
-                if (date) {
-                  const d = new Date(date);
-                  d.setHours(12, 0, 0, 0);
-                  setSelectedDate(d);
-                  setCalendarOpen(false);
-                }
-              }}
-              locale={es}
-            />
-          </PopoverContent>
-        </Popover>
-
-        {/* Quick shortcuts */}
-        {!isToday(selectedDate) && (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setSelectedDate(todayDate())}
-            className="gap-1.5 text-xs"
-          >
-            <Clock className="size-3.5" />
-            Hoy
-          </Button>
-        )}
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => { setSelectedDate(addDays(todayDate(), 1)); }}
-          className={`text-xs ${isTomorrow(selectedDate) ? 'border-terracota text-terracota' : ''}`}
-        >
-          Mañana
-        </Button>
-      </div>
-
-      {/* Filters row */}
-      <div className="flex flex-wrap gap-2 items-center">
-        <span className="text-xs text-carbon/50 font-sans uppercase tracking-wider">Filtrar:</span>
-
-        {/* Quick: Pendientes */}
+      {/* View mode tabs */}
+      <div className="flex items-center gap-1 p-1 bg-crema rounded-xl w-fit border border-border">
         <button
           type="button"
-          onClick={() => setEstadoFilter(estadoFilter === 'pendiente' ? 'todas' : 'pendiente')}
+          onClick={() => setViewMode('pendientes')}
           className={[
-            'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-sans transition-all',
-            estadoFilter === 'pendiente'
-              ? 'bg-yellow-400 border-yellow-400 text-yellow-900 font-semibold'
-              : 'border-yellow-300 text-yellow-700 hover:bg-yellow-50',
+            'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-sans transition-all',
+            viewMode === 'pendientes'
+              ? 'bg-white shadow-sm text-carbon font-medium'
+              : 'text-carbon/50 hover:text-carbon',
           ].join(' ')}
         >
+          <AlertCircle className="size-4" />
           Pendientes
-          {pendingCount > 0 && (
-            <Badge className="bg-yellow-700 text-white text-[10px] px-1.5 py-0 h-4 min-w-0">
-              {pendingCount}
+          {totalPending > 0 && (
+            <Badge className="bg-yellow-500 text-white text-[10px] px-1.5 py-0 h-4 min-w-0">
+              {totalPending}
             </Badge>
           )}
         </button>
-
-        {/* Full estado select */}
-        <Select
-          value={estadoFilter}
-          onValueChange={(v) => setEstadoFilter(v as 'todas' | EstadoReserva)}
+        <button
+          type="button"
+          onClick={() => setViewMode('dia')}
+          className={[
+            'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-sans transition-all',
+            viewMode === 'dia'
+              ? 'bg-white shadow-sm text-carbon font-medium'
+              : 'text-carbon/50 hover:text-carbon',
+          ].join(' ')}
         >
-          <SelectTrigger className="h-8 w-44 text-xs">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {ESTADO_OPTIONS.map((opt) => (
-              <SelectItem key={opt.value} value={opt.value} className="text-xs">
-                {opt.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+          <CalendarIcon className="size-4" />
+          Por día
+        </button>
       </div>
 
-      {/* Table */}
-      {loading ? (
-        <div className="flex items-center justify-center h-40">
-          <Loader2 className="size-7 animate-spin text-terracota" />
-        </div>
-      ) : reservas.length === 0 ? (
-        <div className="flex flex-col items-center justify-center h-40 bg-white rounded-xl border border-border gap-2">
-          <p className="font-sans text-sm text-carbon/40">
-            No hay reservas {estadoFilter !== 'todas' ? `con estado "${estadoFilter}"` : ''} para {dayLabel.toLowerCase()}.
-          </p>
-          {estadoFilter !== 'todas' && (
-            <button
-              type="button"
-              onClick={() => setEstadoFilter('todas')}
-              className="text-xs text-terracota underline"
-            >
-              Ver todas las reservas
-            </button>
+      {/* ── PENDING VIEW ─────────────────────────────────────────────── */}
+      {viewMode === 'pendientes' && (
+        <>
+          <div className="flex items-center gap-2">
+            <p className="font-sans text-sm text-carbon/60">
+              {loading ? 'Cargando...' : (
+                totalPending === 0
+                  ? 'No hay reservas pendientes.'
+                  : `${totalPending} reserva${totalPending !== 1 ? 's' : ''} pendiente${totalPending !== 1 ? 's' : ''} de confirmación`
+              )}
+            </p>
+            {!loading && totalPending > 0 && (
+              <button
+                type="button"
+                onClick={fetchPendingReservas}
+                className="text-xs text-terracota hover:underline"
+              >
+                Actualizar
+              </button>
+            )}
+          </div>
+
+          {loading ? (
+            <div className="flex items-center justify-center h-40">
+              <Loader2 className="size-7 animate-spin text-terracota" />
+            </div>
+          ) : pendingReservas.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-48 bg-white rounded-xl border border-border gap-3">
+              <div className="w-12 h-12 rounded-full bg-green-50 flex items-center justify-center">
+                <span className="text-2xl">✓</span>
+              </div>
+              <p className="font-sans text-sm text-carbon/40">Todas las reservas están gestionadas.</p>
+            </div>
+          ) : (
+            <div className="rounded-xl border border-border bg-white overflow-hidden">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-28">Fecha</TableHead>
+                    <TableHead className="w-16">Hora</TableHead>
+                    <TableHead>Nombre</TableHead>
+                    <TableHead className="w-16 text-center">Pers.</TableHead>
+                    <TableHead className="hidden md:table-cell">Teléfono</TableHead>
+                    <TableHead className="hidden lg:table-cell">Email</TableHead>
+                    <TableHead>Estado</TableHead>
+                    <TableHead className="hidden lg:table-cell">Alérgenos</TableHead>
+                    <TableHead className="hidden xl:table-cell">Petición</TableHead>
+                    <TableHead className="w-10" />
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {pendingReservas.map((reserva) => (
+                    <ReservaRow
+                      key={reserva.id}
+                      reserva={reserva}
+                      onUpdate={handleUpdatePending}
+                      showDate
+                    />
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
           )}
-        </div>
-      ) : (
-        <div className="rounded-xl border border-border bg-white overflow-hidden">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-16">Hora</TableHead>
-                <TableHead>Nombre</TableHead>
-                <TableHead className="w-16 text-center">Pers.</TableHead>
-                <TableHead className="hidden md:table-cell">Teléfono</TableHead>
-                <TableHead className="hidden lg:table-cell">Email</TableHead>
-                <TableHead>Estado</TableHead>
-                <TableHead className="hidden lg:table-cell">Alérgenos</TableHead>
-                <TableHead className="hidden xl:table-cell">Petición</TableHead>
-                <TableHead className="w-10" />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {reservas.map((reserva) => (
-                <ReservaRow key={reserva.id} reserva={reserva} onUpdate={handleUpdate} />
-              ))}
-            </TableBody>
-          </Table>
-        </div>
+        </>
       )}
 
-      <p className="font-sans text-xs text-carbon/40">
-        {reservas.length} {reservas.length === 1 ? 'reserva' : 'reservas'} · {dayLabel}
-        {pendingCount > 0 && estadoFilter !== 'pendiente' && (
-          <span className="text-yellow-600 ml-2">· {pendingCount} pendiente{pendingCount !== 1 ? 's' : ''}</span>
-        )}
-      </p>
+      {/* ── DAY VIEW ─────────────────────────────────────────────────── */}
+      {viewMode === 'dia' && (
+        <>
+          {/* Date navigation */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <Button variant="outline" size="icon-sm" onClick={() => goDay(-1)} title="Día anterior">
+              <ChevronLeft className="size-4" />
+            </Button>
+            <Button variant="outline" size="icon-sm" onClick={() => goDay(1)} title="Día siguiente">
+              <ChevronRight className="size-4" />
+            </Button>
+
+            <Popover open={calendarOpen} onOpenChange={setCalendarOpen}>
+              <PopoverTrigger
+                render={<button type="button" />}
+                className="flex h-9 items-center gap-2 rounded-lg border border-input bg-transparent px-3 py-1 text-sm font-medium transition-colors hover:bg-muted capitalize"
+              >
+                <CalendarIcon className="size-4 text-carbon/40 shrink-0" />
+                {dayLabel}
+                {!isToday(selectedDate) && (
+                  <span className="text-xs text-carbon/40 font-normal">
+                    · {format(selectedDate, 'd MMM', { locale: es })}
+                  </span>
+                )}
+              </PopoverTrigger>
+              <PopoverContent className="w-auto p-0" align="start">
+                <Calendar
+                  mode="single"
+                  selected={selectedDate}
+                  onSelect={(date) => {
+                    if (date) {
+                      const d = new Date(date);
+                      d.setHours(12, 0, 0, 0);
+                      setSelectedDate(d);
+                      setCalendarOpen(false);
+                    }
+                  }}
+                  locale={es}
+                />
+              </PopoverContent>
+            </Popover>
+
+            {!isToday(selectedDate) && (
+              <Button variant="outline" size="sm" onClick={() => setSelectedDate(todayDate())} className="gap-1.5 text-xs">
+                <Clock className="size-3.5" />
+                Hoy
+              </Button>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setSelectedDate(addDays(todayDate(), 1))}
+              className={`text-xs ${isTomorrow(selectedDate) ? 'border-terracota text-terracota' : ''}`}
+            >
+              Mañana
+            </Button>
+          </div>
+
+          {/* Estado filter */}
+          <div className="flex flex-wrap gap-2 items-center">
+            <span className="text-xs text-carbon/50 font-sans uppercase tracking-wider">Estado:</span>
+            <Select
+              value={estadoFilter}
+              onValueChange={(v) => setEstadoFilter(v as 'todas' | EstadoReserva)}
+            >
+              <SelectTrigger className="h-8 w-44 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {ESTADO_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value} className="text-xs">
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Table */}
+          {loading ? (
+            <div className="flex items-center justify-center h-40">
+              <Loader2 className="size-7 animate-spin text-terracota" />
+            </div>
+          ) : dayReservas.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-40 bg-white rounded-xl border border-border gap-2">
+              <p className="font-sans text-sm text-carbon/40">
+                No hay reservas {estadoFilter !== 'todas' ? `"${estadoFilter}"` : ''} para {dayLabel.toLowerCase()}.
+              </p>
+              {estadoFilter !== 'todas' && (
+                <button type="button" onClick={() => setEstadoFilter('todas')} className="text-xs text-terracota underline">
+                  Ver todas
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="rounded-xl border border-border bg-white overflow-hidden">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-16">Hora</TableHead>
+                    <TableHead>Nombre</TableHead>
+                    <TableHead className="w-16 text-center">Pers.</TableHead>
+                    <TableHead className="hidden md:table-cell">Teléfono</TableHead>
+                    <TableHead className="hidden lg:table-cell">Email</TableHead>
+                    <TableHead>Estado</TableHead>
+                    <TableHead className="hidden lg:table-cell">Alérgenos</TableHead>
+                    <TableHead className="hidden xl:table-cell">Petición</TableHead>
+                    <TableHead className="w-10" />
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {dayReservas.map((reserva) => (
+                    <ReservaRow key={reserva.id} reserva={reserva} onUpdate={handleUpdateDay} />
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+
+          <p className="font-sans text-xs text-carbon/40">
+            {dayReservas.length} {dayReservas.length === 1 ? 'reserva' : 'reservas'} · {dayLabel}
+          </p>
+        </>
+      )}
     </div>
   );
 }
