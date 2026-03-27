@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
-import { resend } from '@/lib/resend';
+import { getResend } from '@/lib/resend';
 import { FRANJAS_HORARIAS, type ReservaFormData } from '@/lib/types';
 
 function generateNumeroReserva(): string {
@@ -145,7 +145,7 @@ export async function POST(request: Request) {
 
     // Send confirmation email (non-blocking)
     try {
-      await resend.emails.send({
+      await getResend().emails.send({
         from: 'Casa Julio <reservas@casajulio.es>',
         to: data.email,
         subject: 'Reserva confirmada - Casa Julio',
