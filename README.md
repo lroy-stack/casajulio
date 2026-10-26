@@ -83,8 +83,7 @@ SUPABASE_SERVICE_ROLE_KEY=eyJ... node scripts/create-admin-user.mjs
 ```
 
 Credenciales creadas por el script:
-- Email: `demo@casajulio.es`
-- Password: `CasaJulio2026!`
+- Las credenciales del administrador se crean con el script anterior y no se publican en el repositorio.
 
 ### 4. Arrancar el servidor de desarrollo
 
